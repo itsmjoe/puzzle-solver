@@ -86,8 +86,8 @@ func NewPuzzleButton(numero int) *PuzzleButton {
 
 func (pb *PuzzleButton) actualizarEstilo() {
 	if pb.esVacio {
-		pb.SetText("")
-		pb.Importance = widget.LowImportance
+		pb.SetText("")                       // Completamente vacío, sin números
+		pb.Importance = widget.LowImportance // Estilo tenue para el espacio vacío
 	} else {
 		pb.SetText(strconv.Itoa(pb.numero))
 		if pb.destacado {
@@ -107,22 +107,27 @@ func (pb *PuzzleButton) setNumero(numero int) {
 }
 
 func (pb *PuzzleButton) destacar() {
-	if !pb.esVacio {
-		// Asegurar que el texto esté visible durante la animación
+	if !pb.esVacio && pb.numero != 0 {
+		// Solo destacar si no es espacio vacío y no es 0
 		pb.SetText(strconv.Itoa(pb.numero))
 		pb.destacado = true
 		pb.Importance = widget.WarningImportance
 		pb.Refresh()
 
-		// Quitar destaque después de 800ms usando fyne.DoAndWait
-		time.AfterFunc(800*time.Millisecond, func() {
+		// Quitar destaque después de 800ms usando una goroutine simple
+		go func() {
+			time.Sleep(800 * time.Millisecond)
 			fyne.DoAndWait(func() {
 				pb.destacado = false
-				pb.SetText(strconv.Itoa(pb.numero)) // Asegurar que el texto permanezca
+				if pb.numero != 0 {
+					pb.SetText(strconv.Itoa(pb.numero))
+				} else {
+					pb.SetText("") // Mantener vacío si es 0
+				}
 				pb.Importance = widget.HighImportance
 				pb.Refresh()
 			})
-		})
+		}()
 	}
 }
 
@@ -366,34 +371,6 @@ func (app *PuzzleApp) actualizarTablero() {
 	app.actualizarEstado()
 }
 
-// Actualizar tablero con animación para paso específico
-func (app *PuzzleApp) actualizarTableroConAnimacion(estadoAnterior [9]int, estadoNuevo [9]int) {
-	// Encontrar qué pieza se movió (la que está en diferente posición y no es 0)
-	posMovida := -1
-	for i := 0; i < 9; i++ {
-		// Buscar la pieza que cambió de posición
-		if estadoAnterior[i] != 0 && estadoAnterior[i] != estadoNuevo[i] {
-			posMovida = i
-			break
-		}
-	}
-
-	// Destacar la pieza que se va a mover
-	if posMovida != -1 {
-		fyne.DoAndWait(func() {
-			app.botones[posMovida].destacar()
-		})
-	}
-
-	// Actualizar el tablero después de un breve delay
-	time.AfterFunc(300*time.Millisecond, func() {
-		fyne.DoAndWait(func() {
-			app.estadoActual = estadoNuevo
-			app.actualizarTablero()
-		})
-	})
-}
-
 // Actualizar información de estado
 func (app *PuzzleApp) actualizarEstado() {
 	if esObjetivo(app.estadoActual, app.objetivo) {
@@ -476,7 +453,7 @@ func (app *PuzzleApp) resolver() {
 	}
 }
 
-// Mostrar siguiente paso con animación
+// Mostrar siguiente paso con animación simple y sin errores de threading
 func (app *PuzzleApp) siguientePaso() {
 	if len(app.solucion) == 0 {
 		app.infoLabel.ParseMarkdown("## ADVERTENCIA\n\n**Estado:** No hay solución cargada\n\n**Acción:** Primero resuelve el puzzle")
@@ -484,7 +461,6 @@ func (app *PuzzleApp) siguientePaso() {
 	}
 
 	if app.paso < len(app.solucion) {
-		estadoAnterior := app.estadoActual
 		estadoNuevo := app.solucion[app.paso].tablero
 
 		progreso := float64(app.paso) / float64(len(app.solucion)-1)
@@ -493,18 +469,31 @@ func (app *PuzzleApp) siguientePaso() {
 		accion := "Estado inicial"
 		if app.paso > 0 {
 			accion = app.solucion[app.paso].accion
+
+			// Encontrar y destacar la pieza que se mueve (sin errores de threading)
+			for i := 0; i < 9; i++ {
+				if app.estadoActual[i] != 0 && app.estadoActual[i] != estadoNuevo[i] {
+					app.botones[i].destacar()
+					break
+				}
+			}
+
+			// Actualizar el tablero después de un pequeño delay
+			go func(nuevoEstado [9]int) {
+				time.Sleep(300 * time.Millisecond)
+				fyne.DoAndWait(func() {
+					app.estadoActual = nuevoEstado
+					app.actualizarTablero()
+				})
+			}(estadoNuevo)
+		} else {
+			// Primer paso: actualización directa
+			app.estadoActual = estadoNuevo
+			app.actualizarTablero()
 		}
 
 		app.infoLabel.ParseMarkdown(fmt.Sprintf("## EJECUTANDO SOLUCIÓN\n\n**Paso:** %d de %d\n\n**Movimiento:** %s\n\n**Progreso:** %.1f%%",
 			app.paso+1, len(app.solucion), accion, progreso*100))
-
-		// Usar animación para mostrar el movimiento
-		if app.paso > 0 {
-			app.actualizarTableroConAnimacion(estadoAnterior, estadoNuevo)
-		} else {
-			app.estadoActual = estadoNuevo
-			app.actualizarTablero()
-		}
 
 		app.paso++
 	} else {
@@ -545,7 +534,7 @@ func main() {
 
 	header := container.NewStack(headerCard, headerContent)
 
-	// Cuadrícula elegante del puzzle
+	// Cuadrícula elegante del puzzle con espacio vacío real
 	cuadricula := container.NewGridWithColumns(3)
 	for i := 0; i < 9; i++ {
 		btn := NewPuzzleButton(1) // Inicializar con número temporal
@@ -553,10 +542,12 @@ func main() {
 
 		// Configuración manual inicial para asegurar visibilidad
 		if i < 8 {
+			// Números del 1 al 8
 			btn.SetText(strconv.Itoa(i + 1))
 			btn.Importance = widget.HighImportance
 		} else {
-			btn.SetText("")
+			// Espacio vacío (sin número 0)
+			btn.SetText("") // Completamente vacío
 			btn.Importance = widget.LowImportance
 		}
 		btn.Refresh()
