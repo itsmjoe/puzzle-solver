@@ -1,214 +1,155 @@
 package main
 
 import (
-	"container/heap"
 	"fmt"
-	"math"
+	"image/color"
 	"math/rand"
 	"strconv"
 	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
-// Estado representa un estado del puzzle 8
+// Tema personalizado para la aplicación
+type MyTheme struct{}
+
+func (t MyTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
+	switch name {
+	case theme.ColorNamePrimary:
+		return color.NRGBA{41, 98, 255, 255} // Azul profesional
+	case theme.ColorNameButton:
+		return color.NRGBA{248, 249, 250, 255} // Blanco suave
+	case theme.ColorNameForeground:
+		return color.NRGBA{33, 37, 41, 255} // Texto oscuro
+	case theme.ColorNameBackground:
+		return color.NRGBA{255, 255, 255, 255} // Fondo blanco
+	case theme.ColorNameInputBackground:
+		return color.NRGBA{255, 255, 255, 255} // Fondo blanco para inputs
+	case theme.ColorNameSelection:
+		return color.NRGBA{41, 98, 255, 40} // Azul transparente para selección
+	case theme.ColorNameHover:
+		return color.NRGBA{41, 98, 255, 20} // Azul muy transparente para hover
+	default:
+		return theme.DefaultTheme().Color(name, variant)
+	}
+}
+
+func (t MyTheme) Font(style fyne.TextStyle) fyne.Resource {
+	return theme.DefaultTheme().Font(style)
+}
+
+func (t MyTheme) Icon(name fyne.ThemeIconName) fyne.Resource {
+	return theme.DefaultTheme().Icon(name)
+}
+
+func (t MyTheme) Size(name fyne.ThemeSizeName) float32 {
+	switch name {
+	case theme.SizeNameText:
+		return 14
+	case theme.SizeNameHeadingText:
+		return 24
+	case theme.SizeNameSubHeadingText:
+		return 18
+	default:
+		return theme.DefaultTheme().Size(name)
+	}
+}
+
+// Estado simple del puzzle
 type Estado struct {
-	tablero    [9]int
-	posVacio   int
-	g          int // costo desde el inicio
-	h          int // heurística
-	f          int // g + h
-	padre      *Estado
-	movimiento string
+	tablero [9]int
+	padre   *Estado
+	costo   int
+	accion  string
 }
 
-// PriorityQueue implementa una cola de prioridad para A*
-type PriorityQueue []*Estado
-
-func (pq PriorityQueue) Len() int           { return len(pq) }
-func (pq PriorityQueue) Less(i, j int) bool { return pq[i].f < pq[j].f }
-func (pq PriorityQueue) Swap(i, j int)      { pq[i], pq[j] = pq[j], pq[i] }
-
-func (pq *PriorityQueue) Push(x interface{}) {
-	*pq = append(*pq, x.(*Estado))
+// Widget personalizado para los botones del puzzle con animación
+type PuzzleButton struct {
+	widget.Button
+	numero    int
+	esVacio   bool
+	destacado bool
 }
 
-func (pq *PriorityQueue) Pop() interface{} {
-	old := *pq
-	n := len(old)
-	item := old[n-1]
-	*pq = old[0 : n-1]
-	return item
+func NewPuzzleButton(numero int) *PuzzleButton {
+	btn := &PuzzleButton{numero: numero, destacado: false}
+	btn.ExtendBaseWidget(btn)
+	btn.esVacio = (numero == 0)
+	btn.actualizarEstilo()
+	return btn
 }
 
-// Aplicación principal
-type PuzzleApp struct {
-	window          fyne.Window
-	tablero         [9]*widget.Button
-	estadoActual    [9]int
-	estadoFinal     [9]int
-	solucion        []*Estado
-	pasoActual      int
-	infoLabel       *widget.Label
-	algoritmoSelect *widget.Select
-}
-
-// Inicializar la aplicación
-func NewPuzzleApp() *PuzzleApp {
-	app := &PuzzleApp{
-		estadoFinal: [9]int{1, 2, 3, 4, 5, 6, 7, 8, 0},
-		pasoActual:  0,
-	}
-
-	// Estado inicial ordenado
-	app.estadoActual = [9]int{1, 2, 3, 4, 5, 6, 7, 8, 0}
-
-	return app
-}
-
-// Actualizar la visualización del tablero
-func (app *PuzzleApp) actualizarTablero() {
-	for i := 0; i < 9; i++ {
-		if app.estadoActual[i] == 0 {
-			app.tablero[i].SetText("")
-			app.tablero[i].Importance = widget.LowImportance
+func (pb *PuzzleButton) actualizarEstilo() {
+	if pb.esVacio {
+		pb.SetText("")
+		pb.Importance = widget.LowImportance
+	} else {
+		pb.SetText(strconv.Itoa(pb.numero))
+		if pb.destacado {
+			pb.Importance = widget.WarningImportance // Naranja suave para movimiento
 		} else {
-			app.tablero[i].SetText(strconv.Itoa(app.estadoActual[i]))
-			app.tablero[i].Importance = widget.MediumImportance
+			pb.Importance = widget.HighImportance
 		}
 	}
-	app.tablero[0].Refresh()
+	pb.Refresh()
 }
 
-// Iniciar el puzzle con estado ordenado
-func (app *PuzzleApp) iniciarPuzzle() {
-	app.estadoActual = [9]int{1, 2, 3, 4, 5, 6, 7, 8, 0}
-	app.solucion = nil
-	app.pasoActual = 0
-	app.actualizarTablero()
-	app.infoLabel.SetText("Puzzle iniciado - Estado ordenado")
+func (pb *PuzzleButton) setNumero(numero int) {
+	pb.numero = numero
+	pb.esVacio = (numero == 0)
+	pb.destacado = false
+	pb.actualizarEstilo()
 }
 
-// Desordenar el tablero
-func (app *PuzzleApp) desordenarTablero() {
-	rand.Seed(time.Now().UnixNano())
+func (pb *PuzzleButton) destacar() {
+	if !pb.esVacio {
+		// Asegurar que el texto esté visible durante la animación
+		pb.SetText(strconv.Itoa(pb.numero))
+		pb.destacado = true
+		pb.Importance = widget.WarningImportance
+		pb.Refresh()
 
-	// Generar un estado aleatorio solucionable
-	for {
-		estado := [9]int{0, 1, 2, 3, 4, 5, 6, 7, 8}
-
-		// Mezclar el array
-		for i := len(estado) - 1; i > 0; i-- {
-			j := rand.Intn(i + 1)
-			estado[i], estado[j] = estado[j], estado[i]
-		}
-
-		if app.esSolucionable(estado) {
-			app.estadoActual = estado
-			break
-		}
-	}
-
-	app.solucion = nil
-	app.pasoActual = 0
-	app.actualizarTablero()
-	app.infoLabel.SetText("Tablero desordenado - Listo para resolver")
-}
-
-// Verificar si un estado es solucionable
-func (app *PuzzleApp) esSolucionable(estado [9]int) bool {
-	inversiones := 0
-	for i := 0; i < 8; i++ {
-		if estado[i] == 0 {
-			continue
-		}
-		for j := i + 1; j < 9; j++ {
-			if estado[j] == 0 {
-				continue
-			}
-			if estado[i] > estado[j] {
-				inversiones++
-			}
-		}
-	}
-	return inversiones%2 == 0
-}
-
-// Resolver el puzzle
-func (app *PuzzleApp) resolverPuzzle() {
-	algoritmo := app.algoritmoSelect.Selected
-	app.infoLabel.SetText("Resolviendo con " + algoritmo + "...")
-
-	estadoInicial := &Estado{
-		tablero:  app.estadoActual,
-		posVacio: app.encontrarPosVacio(app.estadoActual),
-		g:        0,
-	}
-
-	var solucion []*Estado
-	var nodos int
-
-	start := time.Now()
-
-	switch algoritmo {
-	case "A* (Manhattan)":
-		solucion, nodos = app.aEstrellaManhattan(estadoInicial)
-	case "A* (Euclidiana)":
-		solucion, nodos = app.aEstrellaEuclidiana(estadoInicial)
-	case "Búsqueda en Anchura":
-		solucion, nodos = app.busquedaEnAnchura(estadoInicial)
-	}
-
-	duracion := time.Since(start)
-
-	if solucion != nil {
-		app.solucion = solucion
-		app.pasoActual = 0
-		app.infoLabel.SetText(fmt.Sprintf("¡Resuelto! Pasos: %d, Nodos: %d, Tiempo: %v ms",
-			len(solucion)-1, nodos, duracion.Milliseconds()))
-	} else {
-		app.infoLabel.SetText("No se encontró solución")
+		// Quitar destaque después de 800ms usando fyne.DoAndWait
+		time.AfterFunc(800*time.Millisecond, func() {
+			fyne.DoAndWait(func() {
+				pb.destacado = false
+				pb.SetText(strconv.Itoa(pb.numero)) // Asegurar que el texto permanezca
+				pb.Importance = widget.HighImportance
+				pb.Refresh()
+			})
+		})
 	}
 }
 
-// Siguiente paso en la solución
-func (app *PuzzleApp) siguientePaso() {
-	if app.solucion == nil {
-		app.infoLabel.SetText("Primero resuelve el puzzle")
-		return
-	}
+// Aplicación del puzzle
+type PuzzleApp struct {
+	window       fyne.Window
+	botones      [9]*PuzzleButton
+	estadoActual [9]int
+	objetivo     [9]int
+	solucion     []Estado
+	paso         int
+	infoLabel    *widget.RichText
+	estadoLabel  *widget.Label
+	algoritmo    *widget.Select
+	progressBar  *widget.ProgressBar
+}
 
-	if app.pasoActual < len(app.solucion) {
-		app.estadoActual = app.solucion[app.pasoActual].tablero
-		app.actualizarTablero()
-
-		movimiento := ""
-		if app.pasoActual > 0 {
-			movimiento = app.solucion[app.pasoActual].movimiento
-		}
-
-		app.infoLabel.SetText(fmt.Sprintf("Paso %d/%d - Movimiento: %s",
-			app.pasoActual+1, len(app.solucion), movimiento))
-		app.pasoActual++
-	} else {
-		app.infoLabel.SetText("¡Solución completada!")
+// Crear nueva aplicación
+func NuevaPuzzleApp() *PuzzleApp {
+	return &PuzzleApp{
+		objetivo: [9]int{1, 2, 3, 4, 5, 6, 7, 8, 0},
+		paso:     0,
 	}
 }
 
-// Reiniciar al estado final
-func (app *PuzzleApp) reiniciarPuzzle() {
-	app.estadoActual = app.estadoFinal
-	app.solucion = nil
-	app.pasoActual = 0
-	app.actualizarTablero()
-	app.infoLabel.SetText("Puzzle reiniciado al estado final")
-}
-
-// Encontrar posición del espacio vacío
-func (app *PuzzleApp) encontrarPosVacio(tablero [9]int) int {
+// Encontrar posición del 0 (vacío)
+func encontrarVacio(tablero [9]int) int {
 	for i := 0; i < 9; i++ {
 		if tablero[i] == 0 {
 			return i
@@ -217,255 +158,509 @@ func (app *PuzzleApp) encontrarPosVacio(tablero [9]int) int {
 	return -1
 }
 
-// Heurística de Manhattan
-func (app *PuzzleApp) heuristicaManhattan(tablero [9]int) int {
+// Verificar si el estado es el objetivo
+func esObjetivo(tablero [9]int, objetivo [9]int) bool {
+	for i := 0; i < 9; i++ {
+		if tablero[i] != objetivo[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// Heurística Manhattan - básica para IA1
+func heuristicaManhattan(tablero [9]int) int {
 	distancia := 0
 	for i := 0; i < 9; i++ {
 		if tablero[i] != 0 {
+			// Posición actual
+			fila_actual := i / 3
+			col_actual := i % 3
+
+			// Posición objetivo (valor-1 porque empezamos en 1)
 			valor := tablero[i]
-			posObjetivo := valor - 1
+			fila_objetivo := (valor - 1) / 3
+			col_objetivo := (valor - 1) % 3
 
-			filaActual := i / 3
-			colActual := i % 3
-			filaObjetivo := posObjetivo / 3
-			colObjetivo := posObjetivo % 3
-
-			distancia += int(math.Abs(float64(filaActual-filaObjetivo))) +
-				int(math.Abs(float64(colActual-colObjetivo)))
+			// Distancia Manhattan
+			distancia += abs(fila_actual-fila_objetivo) + abs(col_actual-col_objetivo)
 		}
 	}
 	return distancia
 }
 
-// Heurística Euclidiana
-func (app *PuzzleApp) heuristicaEuclidiana(tablero [9]int) int {
-	distancia := 0.0
-	for i := 0; i < 9; i++ {
-		if tablero[i] != 0 {
-			valor := tablero[i]
-			posObjetivo := valor - 1
-
-			filaActual := float64(i / 3)
-			colActual := float64(i % 3)
-			filaObjetivo := float64(posObjetivo / 3)
-			colObjetivo := float64(posObjetivo % 3)
-
-			distancia += math.Sqrt(math.Pow(filaActual-filaObjetivo, 2) +
-				math.Pow(colActual-colObjetivo, 2))
-		}
+// Función auxiliar para valor absoluto
+func abs(x int) int {
+	if x < 0 {
+		return -x
 	}
-	return int(distancia)
+	return x
 }
 
-// Generar sucesores de un estado
-func (app *PuzzleApp) generarSucesores(estado *Estado) []*Estado {
-	sucesores := []*Estado{}
-	posVacio := estado.posVacio
-
-	movimientos := []struct {
-		dx, dy int
-		nombre string
-	}{
-		{-1, 0, "Arriba"},
-		{1, 0, "Abajo"},
-		{0, -1, "Izquierda"},
-		{0, 1, "Derecha"},
-	}
+// Generar movimientos posibles
+func generarMovimientos(tablero [9]int) []Estado {
+	movimientos := []Estado{}
+	posVacio := encontrarVacio(tablero)
 
 	fila := posVacio / 3
 	col := posVacio % 3
 
-	for _, mov := range movimientos {
-		nuevaFila := fila + mov.dx
-		nuevaCol := col + mov.dy
+	// Arriba
+	if fila > 0 {
+		nuevo := tablero
+		nueva_pos := (fila-1)*3 + col
+		nuevo[posVacio], nuevo[nueva_pos] = nuevo[nueva_pos], nuevo[posVacio]
+		movimientos = append(movimientos, Estado{
+			tablero: nuevo,
+			accion:  "Arriba",
+		})
+	}
 
-		if nuevaFila >= 0 && nuevaFila < 3 && nuevaCol >= 0 && nuevaCol < 3 {
-			nuevaPos := nuevaFila*3 + nuevaCol
+	// Abajo
+	if fila < 2 {
+		nuevo := tablero
+		nueva_pos := (fila+1)*3 + col
+		nuevo[posVacio], nuevo[nueva_pos] = nuevo[nueva_pos], nuevo[posVacio]
+		movimientos = append(movimientos, Estado{
+			tablero: nuevo,
+			accion:  "Abajo",
+		})
+	}
 
-			nuevoTablero := estado.tablero
-			nuevoTablero[posVacio], nuevoTablero[nuevaPos] = nuevoTablero[nuevaPos], nuevoTablero[posVacio]
+	// Izquierda
+	if col > 0 {
+		nuevo := tablero
+		nueva_pos := fila*3 + (col - 1)
+		nuevo[posVacio], nuevo[nueva_pos] = nuevo[nueva_pos], nuevo[posVacio]
+		movimientos = append(movimientos, Estado{
+			tablero: nuevo,
+			accion:  "Izquierda",
+		})
+	}
 
-			sucesor := &Estado{
-				tablero:    nuevoTablero,
-				posVacio:   nuevaPos,
-				g:          estado.g + 1,
-				padre:      estado,
-				movimiento: mov.nombre,
+	// Derecha
+	if col < 2 {
+		nuevo := tablero
+		nueva_pos := fila*3 + (col + 1)
+		nuevo[posVacio], nuevo[nueva_pos] = nuevo[nueva_pos], nuevo[posVacio]
+		movimientos = append(movimientos, Estado{
+			tablero: nuevo,
+			accion:  "Derecha",
+		})
+	}
+
+	return movimientos
+}
+
+// Búsqueda A* simple (versión para estudiantes de IA1)
+func busquedaAEstrella(inicial [9]int, objetivo [9]int) []Estado {
+	// Lista abierta (estados por explorar)
+	abierta := []Estado{{tablero: inicial, costo: 0}}
+	// Lista cerrada (estados ya explorados)
+	cerrada := []string{}
+
+	for len(abierta) > 0 {
+		// Encontrar el estado con menor f = g + h
+		indice_mejor := 0
+		mejor_f := abierta[0].costo + heuristicaManhattan(abierta[0].tablero)
+
+		for i := 1; i < len(abierta); i++ {
+			f := abierta[i].costo + heuristicaManhattan(abierta[i].tablero)
+			if f < mejor_f {
+				mejor_f = f
+				indice_mejor = i
+			}
+		}
+
+		// Tomar el mejor estado
+		actual := abierta[indice_mejor]
+		abierta = append(abierta[:indice_mejor], abierta[indice_mejor+1:]...)
+
+		// Si es el objetivo, reconstruir camino
+		if esObjetivo(actual.tablero, objetivo) {
+			camino := []Estado{}
+			estado := &actual
+			for estado != nil {
+				camino = append([]Estado{*estado}, camino...)
+				estado = estado.padre
+			}
+			return camino
+		}
+
+		// Agregar a cerrada
+		cerrada = append(cerrada, fmt.Sprintf("%v", actual.tablero))
+
+		// Generar sucesores
+		for _, movimiento := range generarMovimientos(actual.tablero) {
+			estado_str := fmt.Sprintf("%v", movimiento.tablero)
+
+			// Verificar si ya está en cerrada
+			ya_explorado := false
+			for _, cerrado := range cerrada {
+				if cerrado == estado_str {
+					ya_explorado = true
+					break
+				}
 			}
 
-			sucesores = append(sucesores, sucesor)
+			if !ya_explorado {
+				movimiento.padre = &actual
+				movimiento.costo = actual.costo + 1
+				abierta = append(abierta, movimiento)
+			}
 		}
 	}
 
-	return sucesores
+	return []Estado{} // No hay solución
 }
 
-// Algoritmo A* con heurística Manhattan
-func (app *PuzzleApp) aEstrellaManhattan(estadoInicial *Estado) ([]*Estado, int) {
-	estadoInicial.h = app.heuristicaManhattan(estadoInicial.tablero)
-	estadoInicial.f = estadoInicial.g + estadoInicial.h
-
-	abiertos := &PriorityQueue{estadoInicial}
-	heap.Init(abiertos)
-
-	cerrados := make(map[string]bool)
-	nodosExplorados := 0
-
-	for abiertos.Len() > 0 {
-		actual := heap.Pop(abiertos).(*Estado)
-		nodosExplorados++
-
-		if actual.tablero == app.estadoFinal {
-			return app.reconstruirCamino(actual), nodosExplorados
-		}
-
-		clave := fmt.Sprintf("%v", actual.tablero)
-		if cerrados[clave] {
-			continue
-		}
-		cerrados[clave] = true
-
-		for _, sucesor := range app.generarSucesores(actual) {
-			claveSucesor := fmt.Sprintf("%v", sucesor.tablero)
-			if !cerrados[claveSucesor] {
-				sucesor.h = app.heuristicaManhattan(sucesor.tablero)
-				sucesor.f = sucesor.g + sucesor.h
-				heap.Push(abiertos, sucesor)
-			}
-		}
-	}
-
-	return nil, nodosExplorados
-}
-
-// Algoritmo A* con heurística Euclidiana
-func (app *PuzzleApp) aEstrellaEuclidiana(estadoInicial *Estado) ([]*Estado, int) {
-	estadoInicial.h = app.heuristicaEuclidiana(estadoInicial.tablero)
-	estadoInicial.f = estadoInicial.g + estadoInicial.h
-
-	abiertos := &PriorityQueue{estadoInicial}
-	heap.Init(abiertos)
-
-	cerrados := make(map[string]bool)
-	nodosExplorados := 0
-
-	for abiertos.Len() > 0 {
-		actual := heap.Pop(abiertos).(*Estado)
-		nodosExplorados++
-
-		if actual.tablero == app.estadoFinal {
-			return app.reconstruirCamino(actual), nodosExplorados
-		}
-
-		clave := fmt.Sprintf("%v", actual.tablero)
-		if cerrados[clave] {
-			continue
-		}
-		cerrados[clave] = true
-
-		for _, sucesor := range app.generarSucesores(actual) {
-			claveSucesor := fmt.Sprintf("%v", sucesor.tablero)
-			if !cerrados[claveSucesor] {
-				sucesor.h = app.heuristicaEuclidiana(sucesor.tablero)
-				sucesor.f = sucesor.g + sucesor.h
-				heap.Push(abiertos, sucesor)
-			}
-		}
-	}
-
-	return nil, nodosExplorados
-}
-
-// Búsqueda en anchura
-func (app *PuzzleApp) busquedaEnAnchura(estadoInicial *Estado) ([]*Estado, int) {
-	cola := []*Estado{estadoInicial}
-	visitados := make(map[string]bool)
-	nodosExplorados := 0
+// Búsqueda en anchura simple
+func busquedaAnchura(inicial [9]int, objetivo [9]int) []Estado {
+	cola := []Estado{{tablero: inicial}}
+	visitados := []string{}
 
 	for len(cola) > 0 {
 		actual := cola[0]
 		cola = cola[1:]
-		nodosExplorados++
 
-		if actual.tablero == app.estadoFinal {
-			return app.reconstruirCamino(actual), nodosExplorados
+		if esObjetivo(actual.tablero, objetivo) {
+			// Reconstruir camino
+			camino := []Estado{}
+			estado := &actual
+			for estado != nil {
+				camino = append([]Estado{*estado}, camino...)
+				estado = estado.padre
+			}
+			return camino
 		}
 
-		clave := fmt.Sprintf("%v", actual.tablero)
-		if visitados[clave] {
-			continue
-		}
-		visitados[clave] = true
+		estado_str := fmt.Sprintf("%v", actual.tablero)
+		visitados = append(visitados, estado_str)
 
-		for _, sucesor := range app.generarSucesores(actual) {
-			claveSucesor := fmt.Sprintf("%v", sucesor.tablero)
-			if !visitados[claveSucesor] {
-				cola = append(cola, sucesor)
+		for _, movimiento := range generarMovimientos(actual.tablero) {
+			mov_str := fmt.Sprintf("%v", movimiento.tablero)
+
+			ya_visitado := false
+			for _, v := range visitados {
+				if v == mov_str {
+					ya_visitado = true
+					break
+				}
+			}
+
+			if !ya_visitado {
+				movimiento.padre = &actual
+				cola = append(cola, movimiento)
 			}
 		}
 	}
 
-	return nil, nodosExplorados
+	return []Estado{}
 }
 
-// Reconstruir el camino de la solución
-func (app *PuzzleApp) reconstruirCamino(estadoFinal *Estado) []*Estado {
-	camino := []*Estado{}
-	actual := estadoFinal
+// Actualizar interfaz con animación de movimiento
+func (app *PuzzleApp) actualizarTablero() {
+	for i := 0; i < 9; i++ {
+		app.botones[i].setNumero(app.estadoActual[i])
+	}
+	app.actualizarEstado()
+}
 
-	for actual != nil {
-		camino = append([]*Estado{actual}, camino...)
-		actual = actual.padre
+// Actualizar tablero con animación para paso específico
+func (app *PuzzleApp) actualizarTableroConAnimacion(estadoAnterior [9]int, estadoNuevo [9]int) {
+	// Encontrar qué pieza se movió (la que está en diferente posición y no es 0)
+	posMovida := -1
+	for i := 0; i < 9; i++ {
+		// Buscar la pieza que cambió de posición
+		if estadoAnterior[i] != 0 && estadoAnterior[i] != estadoNuevo[i] {
+			posMovida = i
+			break
+		}
 	}
 
-	return camino
+	// Destacar la pieza que se va a mover
+	if posMovida != -1 {
+		fyne.DoAndWait(func() {
+			app.botones[posMovida].destacar()
+		})
+	}
+
+	// Actualizar el tablero después de un breve delay
+	time.AfterFunc(300*time.Millisecond, func() {
+		fyne.DoAndWait(func() {
+			app.estadoActual = estadoNuevo
+			app.actualizarTablero()
+		})
+	})
+}
+
+// Actualizar información de estado
+func (app *PuzzleApp) actualizarEstado() {
+	if esObjetivo(app.estadoActual, app.objetivo) {
+		app.estadoLabel.SetText("ESTADO: RESUELTO")
+		app.estadoLabel.Importance = widget.SuccessImportance
+	} else {
+		manhattan := heuristicaManhattan(app.estadoActual)
+		app.estadoLabel.SetText(fmt.Sprintf("ESTADO: EN PROCESO | Heurística Manhattan: %d", manhattan))
+		app.estadoLabel.Importance = widget.MediumImportance
+	}
+}
+
+// Inicializar puzzle ordenado
+func (app *PuzzleApp) iniciar() {
+	app.estadoActual = [9]int{1, 2, 3, 4, 5, 6, 7, 8, 0}
+	app.solucion = []Estado{}
+	app.paso = 0
+	app.progressBar.SetValue(0)
+	app.actualizarTablero()
+
+	app.infoLabel.ParseMarkdown("## SISTEMA INICIALIZADO\n\n**Estado:** Puzzle ordenado correctamente\n\n**Acción:** Presiona 'Mezclar' para comenzar")
+}
+
+// Mezclar puzzle
+func (app *PuzzleApp) mezclar() {
+	rand.Seed(time.Now().UnixNano())
+
+	app.infoLabel.ParseMarkdown("## MEZCLANDO PUZZLE\n\n**Estado:** Generando configuración aleatoria...\n\n**Por favor espera**")
+
+	// Mezclar haciendo movimientos aleatorios
+	app.estadoActual = app.objetivo
+	for i := 0; i < 150; i++ {
+		movimientos := generarMovimientos(app.estadoActual)
+		if len(movimientos) > 0 {
+			mov := movimientos[rand.Intn(len(movimientos))]
+			app.estadoActual = mov.tablero
+		}
+	}
+
+	app.solucion = []Estado{}
+	app.paso = 0
+	app.progressBar.SetValue(0)
+	app.actualizarTablero()
+
+	manhattan := heuristicaManhattan(app.estadoActual)
+	app.infoLabel.ParseMarkdown(fmt.Sprintf("## PUZZLE MEZCLADO\n\n**Estado:** Configuración aleatoria generada\n\n**Heurística Manhattan:** %d\n\n**Acción:** Selecciona algoritmo y presiona 'Resolver'", manhattan))
+}
+
+// Resolver puzzle
+func (app *PuzzleApp) resolver() {
+	algoritmo_seleccionado := app.algoritmo.Selected
+	app.infoLabel.ParseMarkdown(fmt.Sprintf("## RESOLVIENDO PUZZLE\n\n**Algoritmo:** %s\n\n**Estado:** Buscando solución óptima...\n\n**Por favor espera**", algoritmo_seleccionado))
+
+	inicio := time.Now()
+
+	if algoritmo_seleccionado == "A* con Heurística Manhattan" {
+		app.solucion = busquedaAEstrella(app.estadoActual, app.objetivo)
+	} else {
+		app.solucion = busquedaAnchura(app.estadoActual, app.objetivo)
+	}
+
+	duracion := time.Since(inicio)
+
+	if len(app.solucion) > 0 {
+		app.paso = 0
+		app.progressBar.SetValue(0)
+
+		eficiencia := "Excelente"
+		if len(app.solucion) > 20 {
+			eficiencia = "Buena"
+		}
+		if len(app.solucion) > 30 {
+			eficiencia = "Promedio"
+		}
+
+		app.infoLabel.ParseMarkdown(fmt.Sprintf("## PUZZLE RESUELTO\n\n**Algoritmo:** %s\n\n**Pasos de solución:** %d\n\n**Tiempo de ejecución:** %d ms\n\n**Eficiencia:** %s\n\n**Acción:** Usa 'Paso a Paso' para ver la solución",
+			algoritmo_seleccionado, len(app.solucion)-1, duracion.Milliseconds(), eficiencia))
+	} else {
+		app.infoLabel.ParseMarkdown("## ERROR\n\n**Estado:** No se encontró solución\n\n**Acción:** Intenta mezclar nuevamente")
+	}
+}
+
+// Mostrar siguiente paso con animación
+func (app *PuzzleApp) siguientePaso() {
+	if len(app.solucion) == 0 {
+		app.infoLabel.ParseMarkdown("## ADVERTENCIA\n\n**Estado:** No hay solución cargada\n\n**Acción:** Primero resuelve el puzzle")
+		return
+	}
+
+	if app.paso < len(app.solucion) {
+		estadoAnterior := app.estadoActual
+		estadoNuevo := app.solucion[app.paso].tablero
+
+		progreso := float64(app.paso) / float64(len(app.solucion)-1)
+		app.progressBar.SetValue(progreso)
+
+		accion := "Estado inicial"
+		if app.paso > 0 {
+			accion = app.solucion[app.paso].accion
+		}
+
+		app.infoLabel.ParseMarkdown(fmt.Sprintf("## EJECUTANDO SOLUCIÓN\n\n**Paso:** %d de %d\n\n**Movimiento:** %s\n\n**Progreso:** %.1f%%",
+			app.paso+1, len(app.solucion), accion, progreso*100))
+
+		// Usar animación para mostrar el movimiento
+		if app.paso > 0 {
+			app.actualizarTableroConAnimacion(estadoAnterior, estadoNuevo)
+		} else {
+			app.estadoActual = estadoNuevo
+			app.actualizarTablero()
+		}
+
+		app.paso++
+	} else {
+		app.progressBar.SetValue(1.0)
+		app.infoLabel.ParseMarkdown("## SOLUCIÓN COMPLETADA\n\n**Estado:** Puzzle resuelto exitosamente\n\n**Felicitaciones:** El algoritmo funcionó correctamente")
+	}
 }
 
 func main() {
+	// Crear aplicación sin tema personalizado para evitar problemas con selector
 	myApp := app.New()
-	puzzleApp := NewPuzzleApp()
-	puzzleApp.window = myApp.NewWindow("8-Puzzle Solver")
-	puzzleApp.window.Resize(fyne.NewSize(500, 600))
+	// myApp.Settings().SetTheme(&MyTheme{}) // Comentado temporalmente
 
-	// Crear botones del tablero
-	tableroContainer := container.NewGridWithColumns(3)
+	ventana := myApp.NewWindow("8-Puzzle Solver - Inteligencia Artificial I | USAC")
+	ventana.Resize(fyne.NewSize(700, 800))
+	ventana.CenterOnScreen()
+
+	puzzleApp := NuevaPuzzleApp()
+	puzzleApp.window = ventana
+
+	// Header elegante sin tema personalizado
+	headerCard := canvas.NewRectangle(color.NRGBA{240, 248, 255, 255})
+	headerCard.Resize(fyne.NewSize(700, 120))
+
+	titulo := canvas.NewText("8-PUZZLE SOLVER", color.NRGBA{25, 118, 210, 255})
+	titulo.Alignment = fyne.TextAlignCenter
+	titulo.TextSize = 28
+	titulo.TextStyle.Bold = true
+
+	subtitulo := canvas.NewText("Inteligencia Artificial I • Universidad de San Carlos de Guatemala", color.NRGBA{84, 110, 122, 255})
+	subtitulo.Alignment = fyne.TextAlignCenter
+	subtitulo.TextSize = 14
+
+	headerContent := container.NewVBox(
+		container.NewPadded(titulo),
+		subtitulo,
+	)
+
+	header := container.NewStack(headerCard, headerContent)
+
+	// Cuadrícula elegante del puzzle
+	cuadricula := container.NewGridWithColumns(3)
 	for i := 0; i < 9; i++ {
-		btn := widget.NewButton("", nil)
-		btn.Resize(fyne.NewSize(80, 80))
-		puzzleApp.tablero[i] = btn
-		tableroContainer.Add(btn)
+		btn := NewPuzzleButton(1) // Inicializar con número temporal
+		btn.Resize(fyne.NewSize(100, 100))
+
+		// Configuración manual inicial para asegurar visibilidad
+		if i < 8 {
+			btn.SetText(strconv.Itoa(i + 1))
+			btn.Importance = widget.HighImportance
+		} else {
+			btn.SetText("")
+			btn.Importance = widget.LowImportance
+		}
+		btn.Refresh()
+
+		puzzleApp.botones[i] = btn
+
+		// Container con sombra simulada
+		btnContainer := container.NewPadded(btn)
+		cuadricula.Add(btnContainer)
 	}
 
-	// Selector de algoritmo
-	puzzleApp.algoritmoSelect = widget.NewSelect(
-		[]string{"A* (Manhattan)", "A* (Euclidiana)", "Búsqueda en Anchura"},
+	// Card para la cuadrícula
+	puzzleCard := canvas.NewRectangle(color.NRGBA{250, 250, 250, 255})
+	puzzleCardContainer := container.NewStack(puzzleCard, container.NewPadded(cuadricula))
+
+	// Panel de estado
+	puzzleApp.estadoLabel = widget.NewLabel("")
+	puzzleApp.estadoLabel.Alignment = fyne.TextAlignCenter
+	puzzleApp.estadoLabel.TextStyle.Bold = true
+
+	// Barra de progreso
+	puzzleApp.progressBar = widget.NewProgressBar()
+	puzzleApp.progressBar.TextFormatter = func() string {
+		return fmt.Sprintf("Progreso: %.0f%%", puzzleApp.progressBar.Value*100)
+	}
+
+	// Selector de algoritmo elegante
+	etiquetaAlgoritmo := widget.NewLabel("ALGORITMO DE BÚSQUEDA")
+	etiquetaAlgoritmo.TextStyle.Bold = true
+	etiquetaAlgoritmo.Alignment = fyne.TextAlignCenter
+
+	puzzleApp.algoritmo = widget.NewSelect(
+		[]string{"A* con Heurística Manhattan", "Búsqueda en Anchura (BFS)"},
 		nil,
 	)
-	puzzleApp.algoritmoSelect.SetSelected("A* (Manhattan)")
+	puzzleApp.algoritmo.SetSelected("A* con Heurística Manhattan")
 
-	// Botones de control
-	btnIniciar := widget.NewButton("Iniciar Puzzle", puzzleApp.iniciarPuzzle)
-	btnDesordenar := widget.NewButton("Desordenar", puzzleApp.desordenarTablero)
-	btnResolver := widget.NewButton("Resolver", puzzleApp.resolverPuzzle)
-	btnPasoAPaso := widget.NewButton("Siguiente Paso", puzzleApp.siguientePaso)
-	btnReiniciar := widget.NewButton("Reiniciar", puzzleApp.reiniciarPuzzle)
+	// Botones principales con texto limpio
+	btnIniciar := widget.NewButton("INICIAR", puzzleApp.iniciar)
+	btnIniciar.Importance = widget.MediumImportance
 
-	// Label de información
-	puzzleApp.infoLabel = widget.NewLabel("8-Puzzle Solver - Selecciona una opción")
+	btnMezclar := widget.NewButton("MEZCLAR", puzzleApp.mezclar)
+	btnMezclar.Importance = widget.HighImportance
 
-	// Layout principal
-	controles := container.NewVBox(
-		widget.NewLabel("Algoritmo:"),
-		puzzleApp.algoritmoSelect,
-		container.NewGridWithColumns(2, btnIniciar, btnDesordenar),
-		container.NewGridWithColumns(2, btnResolver, btnPasoAPaso),
-		btnReiniciar,
-		puzzleApp.infoLabel,
+	btnResolver := widget.NewButton("RESOLVER", puzzleApp.resolver)
+	btnResolver.Importance = widget.SuccessImportance
+
+	btnPaso := widget.NewButton("PASO A PASO", puzzleApp.siguientePaso)
+	btnPaso.Importance = widget.MediumImportance
+
+	// Panel de información con RichText
+	etiquetaInfo := widget.NewLabel("INFORMACIÓN DEL SISTEMA")
+	etiquetaInfo.TextStyle.Bold = true
+	etiquetaInfo.Alignment = fyne.TextAlignCenter
+
+	puzzleApp.infoLabel = widget.NewRichTextFromMarkdown("")
+
+	// Scroll para el texto de información
+	infoScroll := container.NewScroll(puzzleApp.infoLabel)
+	infoScroll.SetMinSize(fyne.NewSize(400, 150))
+
+	// Layout de controles
+	controlesGrid := container.NewGridWithColumns(2,
+		btnIniciar, btnMezclar,
+		btnResolver, btnPaso,
 	)
 
-	content := container.NewBorder(nil, controles, nil, nil, tableroContainer)
-	puzzleApp.window.SetContent(content)
+	controles := container.NewVBox(
+		etiquetaAlgoritmo,
+		puzzleApp.algoritmo,
+		widget.NewSeparator(),
+		controlesGrid,
+		widget.NewSeparator(),
+		puzzleApp.progressBar,
+	)
 
-	puzzleApp.actualizarTablero()
-	puzzleApp.window.ShowAndRun()
+	// Panel de información
+	infoPanel := container.NewVBox(
+		etiquetaInfo,
+		infoScroll,
+	)
+
+	// Layout central
+	mainContent := container.NewVBox(
+		puzzleApp.estadoLabel,
+		puzzleCardContainer,
+		widget.NewSeparator(),
+		controles,
+		widget.NewSeparator(),
+		infoPanel,
+	)
+
+	// Container principal con padding
+	content := container.NewBorder(
+		header,
+		nil,
+		nil,
+		nil,
+		container.NewPadded(mainContent),
+	)
+
+	ventana.SetContent(content)
+
+	// Inicializar y mostrar
+	puzzleApp.iniciar()
+	ventana.ShowAndRun()
 }
